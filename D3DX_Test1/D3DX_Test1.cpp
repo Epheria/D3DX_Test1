@@ -18,12 +18,15 @@ HRESULT InitIndexBuffer();
 void Cleanup();
 void Render();
 void SetupMatrices();
-
+void Update();
+void DrawMesh(const D3DXMATRIXA16& matrix);
 
 LPDIRECT3D9 g_pD3D = NULL; // D3D Device를 생성할 D3D 객체 변수, 전역변수
 LPDIRECT3DDEVICE9 g_pd3dDevice = NULL; // 렌더링에 사용될 D3D Device. 전역변수
 LPDIRECT3DVERTEXBUFFER9 g_pVB = NULL; // 정점 버퍼, 전역변수
 LPDIRECT3DINDEXBUFFER9 g_pIB = NULL; // 인덱스 버퍼 , 전역변수
+
+D3DXMATRIXA16 g_matEarth, g_matEarth2, g_matMoon, g_matSun;
 
 struct CUSTOMVERTEX
 {
@@ -85,6 +88,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                         }
                         else
                         {
+                            Update();
                             Render();
                         }
                     }
@@ -131,6 +135,19 @@ HRESULT InitD3D(HWND hWnd)
     d3dpp.BackBufferFormat = D3DFMT_UNKNOWN;  // 런타임에 현재 디스플레이 모드에 맞춰 백 버퍼 생성
     d3dpp.EnableAutoDepthStencil = TRUE;
     d3dpp.AutoDepthStencilFormat = D3DFMT_D16;
+
+    // 멀티 샘플링
+    DWORD level;
+    for (auto type = (int)D3DMULTISAMPLE_16_SAMPLES; 0 < type; type--)
+    {
+        if (SUCCEEDED(g_pD3D->CheckDeviceMultiSampleType(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, D3DFMT_D16,
+            FALSE, (D3DMULTISAMPLE_TYPE)type, &level)))
+        {
+            d3dpp.MultiSampleQuality = level - 1;
+            d3dpp.MultiSampleType = (D3DMULTISAMPLE_TYPE)type;
+        }
+    }
+
     // Device 생성
     if (FAILED(g_pD3D->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hWnd,
         D3DCREATE_SOFTWARE_VERTEXPROCESSING, &d3dpp, &g_pd3dDevice)))
@@ -138,6 +155,7 @@ HRESULT InitD3D(HWND hWnd)
         return E_FAIL;
     }
 
+    g_pd3dDevice->SetRenderState(D3DRS_MULTISAMPLEANTIALIAS, (0 < d3dpp.MultiSampleType)); // 멀티 샘플링
     g_pd3dDevice->SetRenderState(D3DRS_CULLMODE, D3DCULL_CCW); // 컬링 모드 켜기
     g_pd3dDevice->SetRenderState(D3DRS_ZENABLE, TRUE);
     g_pd3dDevice->SetRenderState(D3DRS_LIGHTING, FALSE); // 광원 기능 끄기
@@ -219,14 +237,19 @@ void Render()
         if (SUCCEEDED(g_pd3dDevice->BeginScene()))
         {
             // 정점의 정보가 담긴 정점 버퍼를 출력 스트림으로 할당
-            g_pd3dDevice->SetStreamSource(0, g_pVB, 0, sizeof(CUSTOMVERTEX));
+            //g_pd3dDevice->SetStreamSource(0, g_pVB, 0, sizeof(CUSTOMVERTEX));
 
-            // D3D에 쉐이더 정보를 지정
-            g_pd3dDevice->SetFVF(D3DFVF_CUSTOM);
+            //// D3D에 쉐이더 정보를 지정
+            //g_pd3dDevice->SetFVF(D3DFVF_CUSTOM);
 
-            g_pd3dDevice->SetIndices(g_pIB);
+            //g_pd3dDevice->SetIndices(g_pIB);
 
-            g_pd3dDevice->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, 8, 0, 12);
+            //g_pd3dDevice->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, 8, 0, 12);
+
+            // 계층구조
+            DrawMesh(g_matSun);
+            DrawMesh(g_matEarth);
+            DrawMesh(g_matMoon);
 
             // 렌더링 종료
             g_pd3dDevice->EndScene();
@@ -235,6 +258,36 @@ void Render()
         // 백 버퍼를 보이는 화면으로 전환
         g_pd3dDevice->Present(NULL, NULL, NULL, NULL);
     }
+}
+
+void Update()
+{
+    // 회전(자전) * 이동    
+    // 크기 변경 * 이동 * 회전(공전) * 부모의 정보 추가.
+
+    auto angle = GetTickCount64() * 0.001f;
+    D3DXMATRIXA16 matSunTr, matSunRo, matSunSc;
+    D3DXMATRIXA16 matEarthTr, matEarthRo, matEarthRo2, matEarthSc;
+    D3DXMATRIXA16 matMoonTr, matMoonRo, matMoonSc;
+
+    D3DXMatrixTranslation(&matSunTr, 0, 0, 0);
+    D3DXMatrixScaling(&matSunSc, 1.0f, 1.0f, 1.0f);
+    D3DXMatrixRotationY(&matSunRo, angle);
+    g_matSun = matSunSc * matSunRo * matSunTr;
+
+
+    D3DXMatrixRotationY(&matEarthRo, angle * 1.2f);
+    D3DXMatrixRotationY(&matEarthRo2, angle * 0.5f);
+    D3DXMatrixScaling(&matEarthSc, 0.5f, 0.5f, 0.5f);
+    D3DXMatrixTranslation(&matEarthTr, 6, 0, 0);
+    
+    // 자전 공전 같이됨
+    g_matEarth = matEarthSc * matEarthRo2 * matEarthTr * matEarthRo * g_matSun;
+
+    D3DXMatrixRotationY(&matMoonRo, angle * 0.5f);
+    D3DXMatrixScaling(&matMoonSc, 0.35f, 0.35f, 0.35f);
+    D3DXMatrixTranslation(&matMoonTr, 5, 0, 0);
+    g_matMoon = matMoonSc * matMoonTr * matMoonRo * g_matEarth;
 }
 
 void SetupMatrices()
@@ -246,7 +299,7 @@ void SetupMatrices()
     g_pd3dDevice->SetTransform(D3DTS_WORLD, &matWorld); // 월드 스페이스로 변환
 
     // 뷰 스페이스
-    D3DXVECTOR3 vEyePt(0.0f, 3.0f, -5.0f);  // 월드 좌표의 카메라 위치
+    D3DXVECTOR3 vEyePt(0.0f, 10.0f, -15.0f);  // 월드 좌표의 카메라 위치
     D3DXVECTOR3 vLookAtPt(0.0f, 0.0f, 0.0f);  // 월드 좌표의 카메라가 바라보는 위치
     D3DXVECTOR3 vUpVector(0.0f, 0.1f, 0.0f);  // 월드 좌표의 하늘 방향을 알기 위한 up vector
 
@@ -258,6 +311,14 @@ void SetupMatrices()
     D3DXMATRIXA16 matProj;
     D3DXMatrixPerspectiveFovLH(&matProj, 45 * Deg2Rad, 1.77f, 1.0f, 100.0f);
     g_pd3dDevice->SetTransform(D3DTS_PROJECTION, &matProj);
+}
+
+void DrawMesh(const D3DXMATRIXA16& matrix)
+{
+    g_pd3dDevice->SetTransform(D3DTS_WORLD, &matrix); g_pd3dDevice->SetStreamSource(0, g_pVB, 0, sizeof(CUSTOMVERTEX));
+    g_pd3dDevice->SetFVF(D3DFVF_CUSTOM);
+    g_pd3dDevice->SetIndices(g_pIB);
+    g_pd3dDevice->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, 8, 0, 12);
 }
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
