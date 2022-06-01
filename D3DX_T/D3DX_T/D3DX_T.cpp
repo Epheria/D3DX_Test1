@@ -17,17 +17,16 @@ LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
 
 LPDIRECT3D9 g_pD3D = NULL; // D3D Device를 생성할 D3D 객체 변수. 전역변수
 LPDIRECT3DDEVICE9 g_pd3dDevice = NULL; // 렌더링에 사용될 D3D Device 전역 변수
-LPDIRECT3DVERTEXBUFFER9 g_pVB = NULL; // 정점 버퍼
+LPDIRECT3DINDEXBUFFER9 g_pIB = NULL; // 인덱스 버퍼
 
-struct CUSTOMVERTEX
+struct INDEX
 {
-    float x, y, z; // 정점의 좌표
-    D3DXVECTOR3 normal; // 법선 벡터
+    DWORD _0, _1, _2;
 };
 #define D3DFVF_CUSTOM (D3DFVF_XYZ | D3DFVF_NORMAL)
 
 HRESULT InitD3D(HWND);
-HRESULT InitVertexBuffer();
+HRESULT InitIndexBuffer();
 void SetupMatrices();
 void Cleanup();
 void Render();
@@ -57,7 +56,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
     if (SUCCEEDED(InitD3D(hWnd)))
     {
-        if (SUCCEEDED(InitVertexBuffer()))
+        if (SUCCEEDED(InitIndexBuffer()))
         {
             ShowWindow(hWnd, nCmdShow);
             UpdateWindow(hWnd);
@@ -190,7 +189,7 @@ void Cleanup()
     // 반드시 생성의 역순으로 해제
     if (NULL != g_pd3dDevice) g_pd3dDevice->Release();
     if (NULL != g_pD3D) g_pD3D->Release();
-    if (NULL != g_pVB) g_pVB->Release();
+    if (NULL != g_pIB) g_pIB->Release();
 }
 
 // 화면에 그리기
@@ -213,6 +212,8 @@ void Render()
         // 렌더링 시작, 폴리곤을 그리겠다고 D3D에 알림(BeginScene).
         if (SUCCEEDED(g_pd3dDevice->BeginScene()))
         {
+            g_pd3dDevice->SetIndices(g_pIB);
+            g_pd3dDevice->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, 8, 0, 12);
             // 렌더링 종료.
             g_pd3dDevice->EndScene();
         }
@@ -220,52 +221,26 @@ void Render()
         // 백 버퍼를 보이는 화면으로 전환.
         g_pd3dDevice->Present(NULL, NULL, NULL, NULL);
     }
-
-    if (SUCCEEDED(g_pd3dDevice->BeginScene()))
-    {
-        // 정점의 정보가 담긴 정점 버퍼를 출력 스트림으로 할당.
-        g_pd3dDevice->SetStreamSource(0, g_pVB, 0, sizeof(CUSTOMVERTEX));
-
-        // D3D에 정점 쉐이더 정보를 지정 ( 대부분의 경우 FVF만 지정)
-        // D3DPT_TRIANGLELIST : 정점을 이어 삼각형을 그린다.
-        // 0번째의 정점 값부터 사용
-        // 삼각형을 1개 그린다.
-        g_pd3dDevice->DrawPrimitive(D3DPT_TRIANGLELIST, 0, 1);
-
-        // 렌더링 종료
-        g_pd3dDevice->EndScene();
-    }
 }
 
-HRESULT InitVertexBuffer()
+HRESULT InitIndexBuffer()
 {
-    CUSTOMVERTEX vertices[] = {
-    { -1, 1, 1, { -1, 1, 1 }}, // v0
-    { 1, 1, 1, { 1, 1, 1} }, // v1
-    { 1, 1, -1, { 1, 1, -1} }, // v2
-    {-1, 1, -1, { -1, 1, -1 }},
-
-    {-1, -1, 1, { -1, -1, 1 }},
-    {1, -1, 1, { 1, -1, 1 }},
-    {1, -1, -1, { 1, -1, -1 }},
-    {-1, -1, -1, { -1, -1, -1 }},
+    INDEX indices[] =
+    {
+        {0, 1, 2}, {0, 2, 3},
+        {4, 6, 5}, {4, 7, 6},
+        {0, 3, 7}, {0, 7, 4},
+        {1, 5, 6}, {1, 6, 2},
+        {3, 2, 6}, {3, 6, 7},
+        {0, 4, 5}, {0, 5, 1}
     };
 
-    // 정점 버퍼 생성
-    // 정점을 보관할 메모리 공간을 할당
-    // FVF를 지정하여 보관할 데이터 형식을 지정.
-    // D3DPOOL_DEFAULT:리소스가 가장 적합한 메모리에 놓여진다.
-    if (FAILED(g_pd3dDevice->CreateVertexBuffer(sizeof(vertices), 0, D3DFVF_CUSTOM, D3DPOOL_DEFAULT, &g_pVB, NULL)))
-    {
-        return E_FAIL;
-    }
+    if (FAILED(g_pd3dDevice->CreateIndexBuffer(sizeof(indices), 0, D3DFMT_INDEX32, D3DPOOL_DEFAULT, &g_pIB, NULL))) return E_FAIL;
 
-    // 정점 버퍼를 지정한 값으로 채운다.
-    // 외부에서 접근하지 못하게 메모리를 Lock() 하고 사용이 끝난 후 Unlock()을 한다.
-    LPVOID pVertices;
-    if (FAILED(g_pVB->Lock(0, sizeof(vertices), (void**)&pVertices, 0))) return E_FAIL;
-    memcpy(pVertices, vertices, sizeof(vertices));
-    g_pVB->Unlock();
+    LPVOID pIndices;
+    if (FAILED(g_pIB->Lock(0, sizeof(indices), (void**)&pIndices, 0))) return E_FAIL;
+    memcpy(pIndices, indices, sizeof(indices));
+    g_pIB->Unlock();
 
     return S_OK;
 }
