@@ -5,6 +5,7 @@
 #include "D3DX_T.h"
 
 #define MAX_LOADSTRING 100
+#define Deg2Rad 0.017453293f
 
 
 // 전역 변수:
@@ -21,11 +22,13 @@ LPDIRECT3DVERTEXBUFFER9 g_pVB = NULL; // 정점 버퍼
 struct CUSTOMVERTEX
 {
     float x, y, z; // 정점의 좌표
-    DWORD color; // 정점의 색깔
+    D3DXVECTOR3 normal; // 법선 벡터
 };
-#define D3DFVF_CUSTOM (D3DFVF_XYZ | D3DFVF_DIFFUSE)
+#define D3DFVF_CUSTOM (D3DFVF_XYZ | D3DFVF_NORMAL)
 
 HRESULT InitD3D(HWND);
+HRESULT InitVertexBuffer();
+void SetupMatrices();
 void Cleanup();
 void Render();
 
@@ -54,23 +57,26 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
     if (SUCCEEDED(InitD3D(hWnd)))
     {
-        ShowWindow(hWnd, nCmdShow);
-        UpdateWindow(hWnd);
-
-        MSG msg;
-        // 기본 메시지 루프입니다:
-        while (true)
+        if (SUCCEEDED(InitVertexBuffer()))
         {
-            if (PeekMessage(&msg, NULL, 0U, 0U, PM_REMOVE))
-            {
-                if (WM_QUIT == msg.message) break;
+            ShowWindow(hWnd, nCmdShow);
+            UpdateWindow(hWnd);
 
-                TranslateMessage(&msg);
-                DispatchMessage(&msg);
-            }
-            else
+            MSG msg;
+            // 기본 메시지 루프입니다:
+            while (true)
             {
-                Render();
+                if (PeekMessage(&msg, NULL, 0U, 0U, PM_REMOVE))
+                {
+                    if (WM_QUIT == msg.message) break;
+
+                    TranslateMessage(&msg);
+                    DispatchMessage(&msg);
+                }
+                else
+                {
+                    Render();
+                }
             }
         }
     }
@@ -144,6 +150,9 @@ HRESULT InitD3D(HWND hWnd)
     d3dpp.Windowed = TRUE; // 창모드로 생성
     d3dpp.SwapEffect = D3DSWAPEFFECT_DISCARD; // 가장 효율적인 SWAP 효과. 백 버퍼의 내용을 프론트 버퍼로 Swap하는 방식.
     d3dpp.BackBufferFormat = D3DFMT_UNKNOWN; // 런타임에, 현재 디스플레이 모드에 맞춰 백 버퍼를 생성.
+    d3dpp.EnableAutoDepthStencil = TRUE; // D3D에서 프로그램의 깊이 버퍼(Z-Buffer)를 관리하게 한다.
+    d3dpp.AutoDepthStencilFormat = D3DFMT_D16; // 16비트의 깊이 버퍼 사용
+
 
     // Device 생성.
     //D3DADAPTER_DEFAULT : 기본 그래픽 카드를 사용
@@ -156,7 +165,23 @@ HRESULT InitD3D(HWND hWnd)
 
     // TODO: 여기에서 Device 상태 정보 처리를 처리한다.
     g_pd3dDevice->SetRenderState(D3DRS_CULLMODE, D3DCULL_CCW); // 컬링 모드를 켠다
-    g_pd3dDevice->SetRenderState(D3DRS_LIGHTING, FALSE); // 광원 기능을 끈다.
+    g_pd3dDevice->SetRenderState(D3DRS_LIGHTING, TRUE); // 광원 기능을 끈다.
+    g_pd3dDevice->SetRenderState(D3DRS_ZENABLE, TRUE); // 깊이 버퍼 기능을 켠다.
+
+    D3DLIGHT9 light; // Direct 3D 9 조명 구조체 변수
+    ZeroMemory(&light, sizeof(light));
+    light.Type = D3DLIGHTTYPE::D3DLIGHT_DIRECTIONAL;
+    light.Diffuse = { 1, 1, 1, 0.5f }; 
+    D3DXVECTOR3 dir = { 1, -1, 1 };
+    D3DXVec3Normalize((D3DXVECTOR3*)&light.Direction, &dir);
+    g_pd3dDevice->SetLight(0, &light);
+    g_pd3dDevice->LightEnable(0, TRUE);
+    g_pd3dDevice->SetRenderState(D3DRS_AMBIENT, 0x00040404);
+
+    D3DMATERIAL9 mtrl;
+    ZeroMemory(&mtrl, sizeof(mtrl));
+    mtrl.Diffuse = mtrl.Ambient = { 1, 1, 1, 1 };
+    g_pd3dDevice->SetMaterial(&mtrl);
     return S_OK;
 }
 
@@ -165,6 +190,7 @@ void Cleanup()
     // 반드시 생성의 역순으로 해제
     if (NULL != g_pd3dDevice) g_pd3dDevice->Release();
     if (NULL != g_pD3D) g_pD3D->Release();
+    if (NULL != g_pVB) g_pVB->Release();
 }
 
 // 화면에 그리기
@@ -181,8 +207,9 @@ void Render()
     // 다음과 같은 경우 IDirect3DDevice9 :: Clear() 함수가 실패.
     // - 깊이 버퍼가 연결되지 않은 렌더링 대상의 깊이 버퍼 또는 스텐실 버퍼를 지운다.
     // - 깊이 버퍼에 스텐실 데이터가 포함되지 않은 경우 스텐실 버퍼를 지운다.
-    if (SUCCEEDED(g_pd3dDevice->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_XRGB(0, 0, 255), 1.0f, 0)))
+    if (SUCCEEDED(g_pd3dDevice->Clear(0, NULL, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, D3DCOLOR_XRGB(0, 0, 255), 1.0f, 0)))
     {
+        SetupMatrices();
         // 렌더링 시작, 폴리곤을 그리겠다고 D3D에 알림(BeginScene).
         if (SUCCEEDED(g_pd3dDevice->BeginScene()))
         {
@@ -193,4 +220,74 @@ void Render()
         // 백 버퍼를 보이는 화면으로 전환.
         g_pd3dDevice->Present(NULL, NULL, NULL, NULL);
     }
+
+    if (SUCCEEDED(g_pd3dDevice->BeginScene()))
+    {
+        // 정점의 정보가 담긴 정점 버퍼를 출력 스트림으로 할당.
+        g_pd3dDevice->SetStreamSource(0, g_pVB, 0, sizeof(CUSTOMVERTEX));
+
+        // D3D에 정점 쉐이더 정보를 지정 ( 대부분의 경우 FVF만 지정)
+        // D3DPT_TRIANGLELIST : 정점을 이어 삼각형을 그린다.
+        // 0번째의 정점 값부터 사용
+        // 삼각형을 1개 그린다.
+        g_pd3dDevice->DrawPrimitive(D3DPT_TRIANGLELIST, 0, 1);
+
+        // 렌더링 종료
+        g_pd3dDevice->EndScene();
+    }
+}
+
+HRESULT InitVertexBuffer()
+{
+    CUSTOMVERTEX vertices[] = {
+    { -1, 1, 1, { -1, 1, 1 }}, // v0
+    { 1, 1, 1, { 1, 1, 1} }, // v1
+    { 1, 1, -1, { 1, 1, -1} }, // v2
+    {-1, 1, -1, { -1, 1, -1 }},
+
+    {-1, -1, 1, { -1, -1, 1 }},
+    {1, -1, 1, { 1, -1, 1 }},
+    {1, -1, -1, { 1, -1, -1 }},
+    {-1, -1, -1, { -1, -1, -1 }},
+    };
+
+    // 정점 버퍼 생성
+    // 정점을 보관할 메모리 공간을 할당
+    // FVF를 지정하여 보관할 데이터 형식을 지정.
+    // D3DPOOL_DEFAULT:리소스가 가장 적합한 메모리에 놓여진다.
+    if (FAILED(g_pd3dDevice->CreateVertexBuffer(sizeof(vertices), 0, D3DFVF_CUSTOM, D3DPOOL_DEFAULT, &g_pVB, NULL)))
+    {
+        return E_FAIL;
+    }
+
+    // 정점 버퍼를 지정한 값으로 채운다.
+    // 외부에서 접근하지 못하게 메모리를 Lock() 하고 사용이 끝난 후 Unlock()을 한다.
+    LPVOID pVertices;
+    if (FAILED(g_pVB->Lock(0, sizeof(vertices), (void**)&pVertices, 0))) return E_FAIL;
+    memcpy(pVertices, vertices, sizeof(vertices));
+    g_pVB->Unlock();
+
+    return S_OK;
+}
+
+void SetupMatrices()
+{
+    // 월드 스페이스
+    D3DXMATRIXA16 matWorld; // 월드 행렬
+    D3DXMatrixIdentity(&matWorld); // 단위 행렬로 변경, 좌표를 (0,0,0)변경
+    g_pd3dDevice->SetTransform(D3DTS_WORLD, &matWorld);
+
+    // 뷰 스페이스
+    D3DXVECTOR3 vEyePt(0.0f, 3.0f, -5.0f); // 월드 좌표의 카메라 위치
+    D3DXVECTOR3 vLookAtPt(0.0f, 0.0f, 0.0f); // 월드 좌표의 카메라가 바라보는 위치
+    D3DXVECTOR3 vUpVector(0.0f, 1.0f, 0.0f); // 월드 좌표의 하늘 방향을 알기 위한 업 벡터
+
+    D3DXMATRIXA16 matView;
+    D3DXMatrixLookAtLH(&matView, &vEyePt, &vLookAtPt, &vUpVector); // 뷰 변환 행렬 계산
+    g_pd3dDevice->SetTransform(D3DTS_VIEW, &matView); // 뷰 스페이스로 변환
+
+    // 투영
+    D3DXMATRIXA16 matProj;
+    D3DXMatrixPerspectiveFovLH(&matProj, 45 * Deg2Rad, 1.77f, 1.0f, 100.0f);
+    g_pd3dDevice->SetTransform(D3DTS_PROJECTION, &matProj);
 }
