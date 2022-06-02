@@ -1,8 +1,15 @@
 ﻿// D3DX_T.cpp : 애플리케이션에 대한 진입점을 정의합니다.
 //
 
+#pragma comment(lib, "d3d9.lib")
+#pragma comment(lib, "d3dx9.lib")
+
+#include <d3d9.h>
+#include <d3dx9.h>
+
 #include "framework.h"
 #include "D3DX_T.h"
+#include "DIB.h"
 
 #define MAX_LOADSTRING 100
 #define Deg2Rad 0.017453293f
@@ -18,6 +25,12 @@ LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
 LPDIRECT3D9 g_pD3D = NULL; // D3D Device를 생성할 D3D 객체 변수. 전역변수
 LPDIRECT3DDEVICE9 g_pd3dDevice = NULL; // 렌더링에 사용될 D3D Device 전역 변수
 LPDIRECT3DINDEXBUFFER9 g_pIB = NULL; // 인덱스 버퍼
+LPDIRECT3DVERTEXBUFFER9 g_pVB = NULL;
+LPDIRECT3DTEXTURE9 g_pEarthTexture = NULL;
+LPDIRECT3DTEXTURE9 g_pMoonTexture = NULL;
+LPDIRECT3DTEXTURE9 g_pSunTexture = NULL;
+
+D3DXMATRIXA16 g_matEarth, g_matMoon, g_matSun;
 
 struct INDEX
 {
@@ -25,11 +38,22 @@ struct INDEX
 };
 #define D3DFVF_CUSTOM (D3DFVF_XYZ | D3DFVF_NORMAL)
 
+struct CUSTOMVERTEX
+{
+    float x, y, z; // 정점의 좌표
+    D3DXVECTOR3 normal;
+    D3DXVECTOR2 tex;
+};
+#define D3DFVF_CUSTOM (D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_TEX1)
+
 HRESULT InitD3D(HWND);
 HRESULT InitIndexBuffer();
+HRESULT InitVertexBuffer();
 void SetupMatrices();
 void Cleanup();
 void Render();
+void Update();
+void DrawMesh(const D3DXMATRIXA16& matrix);
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                      _In_opt_ HINSTANCE hPrevInstance,
@@ -46,7 +70,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     LoadStringW(hInstance, IDC_D3DXT, szWindowClass, MAX_LOADSTRING);
     MyRegisterClass(hInstance);
 
-    HWND hWnd = CreateWindowW(szWindowClass, L"타이틀 이름", WS_SYSMENU | WS_MINIMIZEBOX,
+    HWND hWnd = CreateWindowW(szWindowClass, L"D3D", WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         CW_USEDEFAULT, 0, CW_USEDEFAULT, 0, nullptr, nullptr, hInstance, nullptr);
 
     if (!hWnd)
@@ -56,29 +80,34 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
     if (SUCCEEDED(InitD3D(hWnd)))
     {
-        if (SUCCEEDED(InitIndexBuffer()))
+        if (SUCCEEDED(InitVertexBuffer()))
         {
-            ShowWindow(hWnd, nCmdShow);
-            UpdateWindow(hWnd);
-
-            MSG msg;
-            // 기본 메시지 루프입니다:
-            while (true)
+            if (SUCCEEDED(InitIndexBuffer()))
             {
-                if (PeekMessage(&msg, NULL, 0U, 0U, PM_REMOVE))
-                {
-                    if (WM_QUIT == msg.message) break;
+                ShowWindow(hWnd, nCmdShow);
+                UpdateWindow(hWnd);
 
-                    TranslateMessage(&msg);
-                    DispatchMessage(&msg);
-                }
-                else
+                MSG msg;
+                // 기본 메시지 루프입니다:
+                while (true)
                 {
-                    Render();
+                    if (PeekMessage(&msg, NULL, 0U, 0U, PM_REMOVE))
+                    {
+                        if (WM_QUIT == msg.message) break;
+
+                        TranslateMessage(&msg);
+                        DispatchMessage(&msg);
+                    }
+                    else
+                    {
+                        Update();
+                        Render();
+                    }
                 }
             }
         }
     }
+    Cleanup();
 
     return 0;
 }
@@ -126,7 +155,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     switch (message)
     {
     case WM_DESTROY:
-        Cleanup();
         PostQuitMessage(0);
         break;
     default:
@@ -152,6 +180,16 @@ HRESULT InitD3D(HWND hWnd)
     d3dpp.EnableAutoDepthStencil = TRUE; // D3D에서 프로그램의 깊이 버퍼(Z-Buffer)를 관리하게 한다.
     d3dpp.AutoDepthStencilFormat = D3DFMT_D16; // 16비트의 깊이 버퍼 사용
 
+    DWORD level;
+    for (auto type = (int)D3DMULTISAMPLE_16_SAMPLES; 0 < type; type--)
+    {
+        if (SUCCEEDED(g_pD3D->CheckDeviceMultiSampleType(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, D3DFMT_D16, FALSE, (D3DMULTISAMPLE_TYPE)type, &level)))
+        {
+            d3dpp.MultiSampleQuality = level - 1;
+            d3dpp.MultiSampleType = (D3DMULTISAMPLE_TYPE)type;
+            break;
+        }
+    }
 
     // Device 생성.
     //D3DADAPTER_DEFAULT : 기본 그래픽 카드를 사용
@@ -164,8 +202,9 @@ HRESULT InitD3D(HWND hWnd)
 
     // TODO: 여기에서 Device 상태 정보 처리를 처리한다.
     g_pd3dDevice->SetRenderState(D3DRS_CULLMODE, D3DCULL_CCW); // 컬링 모드를 켠다
-    g_pd3dDevice->SetRenderState(D3DRS_LIGHTING, TRUE); // 광원 기능을 끈다.
     g_pd3dDevice->SetRenderState(D3DRS_ZENABLE, TRUE); // 깊이 버퍼 기능을 켠다.
+    g_pd3dDevice->SetRenderState(D3DRS_LIGHTING, TRUE); // 광원 기능을 끈다.
+    g_pd3dDevice->SetRenderState(D3DRS_MULTISAMPLEANTIALIAS, (0 < d3dpp.MultiSampleType));
 
     D3DLIGHT9 light; // Direct 3D 9 조명 구조체 변수
     ZeroMemory(&light, sizeof(light));
@@ -176,6 +215,9 @@ HRESULT InitD3D(HWND hWnd)
     g_pd3dDevice->SetLight(0, &light);
     g_pd3dDevice->LightEnable(0, TRUE);
     g_pd3dDevice->SetRenderState(D3DRS_AMBIENT, 0x00040404);
+    D3DXCreateTextureFromFile(g_pd3dDevice, L"earth.png", &g_pEarthTexture);
+    D3DXCreateTextureFromFile(g_pd3dDevice, L"moon.jpg", &g_pMoonTexture);
+    D3DXCreateTextureFromFile(g_pd3dDevice, L"sun.png", &g_pSunTexture);
 
     D3DMATERIAL9 mtrl;
     ZeroMemory(&mtrl, sizeof(mtrl));
@@ -190,6 +232,10 @@ void Cleanup()
     if (NULL != g_pd3dDevice) g_pd3dDevice->Release();
     if (NULL != g_pD3D) g_pD3D->Release();
     if (NULL != g_pIB) g_pIB->Release();
+    if (NULL != g_pVB) g_pVB->Release();
+    if (NULL != g_pEarthTexture) g_pEarthTexture->Release();
+    if (NULL != g_pMoonTexture) g_pMoonTexture->Release();
+    if (NULL != g_pSunTexture) g_pSunTexture->Release();
 }
 
 // 화면에 그리기
@@ -212,8 +258,12 @@ void Render()
         // 렌더링 시작, 폴리곤을 그리겠다고 D3D에 알림(BeginScene).
         if (SUCCEEDED(g_pd3dDevice->BeginScene()))
         {
-            g_pd3dDevice->SetIndices(g_pIB);
-            g_pd3dDevice->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, 8, 0, 12);
+            g_pd3dDevice->SetTexture(0, g_pSunTexture);
+            DrawMesh(g_matSun);
+            g_pd3dDevice->SetTexture(0, g_pEarthTexture);
+            DrawMesh(g_matEarth);
+            g_pd3dDevice->SetTexture(0, g_pMoonTexture);
+            DrawMesh(g_matMoon);
             // 렌더링 종료.
             g_pd3dDevice->EndScene();
         }
@@ -223,17 +273,58 @@ void Render()
     }
 }
 
+HRESULT InitVertexBuffer()
+{
+    CUSTOMVERTEX vertices[24];
+
+    for (int i = 0; 2 > i; i++)
+    {
+        int index = i * 4;
+        vertices[index] = { -0.5f, 0.5f - i, 0.5f, D3DXVECTOR3(-0.5f, 0.5f - i, 0.5f), D3DXVECTOR2(0.25f, i) };
+        vertices[index + 1] = { -0.5f, 0.5f - i, -0.5f, D3DXVECTOR3(-0.5f, 0.5f - i, -0.5f), D3DXVECTOR2(0.25f, i * 0.333333f + 0.333333f) };
+        vertices[index + 2] = { 0.5f, 0.5f - i, -0.5f, D3DXVECTOR3(0.5f, 0.5f - i, -0.5f), D3DXVECTOR2(0.5f, i * 0.333333f + 0.333333f) };
+        vertices[index + 3] = { 0.5f, 0.5f - i, 0.5f, D3DXVECTOR3(0.5f, 0.5f - i, 0.5f), D3DXVECTOR2(0.5f, i) };
+    }
+    for (int i = 0; 4 > i; i++)
+    {
+        
+        int index = (i + 2) * 4;
+        vertices[index] = vertices[Repeat(i, 3)]; // left, top
+        vertices[index].tex = D3DXVECTOR2(i * 0.25f, 0.333333f);
+        vertices[index + 1] = vertices[Repeat(i, 3) + 4]; // left, bottom
+        vertices[index + 1].tex = D3DXVECTOR2(i * 0.25f, 0.666666f);
+        vertices[index + 2] = vertices[Repeat(i + 1, 3) + 4]; // right, bottom
+        vertices[index + 2].tex = D3DXVECTOR2((i + 1) * 0.25f, 0.666666f);
+        vertices[index + 3] = vertices[Repeat(i + 1, 3)]; // right, top
+        vertices[index + 3].tex = D3DXVECTOR2((i + 1) * 0.25f, 0.333333f);
+    }
+
+    if (FAILED(g_pd3dDevice->CreateVertexBuffer(sizeof(vertices), 0, D3DFVF_CUSTOM, D3DPOOL_DEFAULT, &g_pVB, NULL)))
+    {
+        return E_FAIL;
+    }
+    // 정점
+
+    LPVOID pVertices;
+    if (FAILED(g_pVB->Lock(0, sizeof(vertices), (void**)&pVertices, 0))) return E_FAIL;
+    memcpy(pVertices, vertices, sizeof(vertices));
+    g_pVB->Unlock();
+    return S_OK;
+}
+
 HRESULT InitIndexBuffer()
 {
-    INDEX indices[] =
+    INDEX indices[12];
+    for (int i = 0; 6 > i; i++)
     {
-        {0, 1, 2}, {0, 2, 3},
-        {4, 6, 5}, {4, 7, 6},
-        {0, 3, 7}, {0, 7, 4},
-        {1, 5, 6}, {1, 6, 2},
-        {3, 2, 6}, {3, 6, 7},
-        {0, 4, 5}, {0, 5, 1}
-    };
+        int index = i * 2;
+        DWORD value = i * 4;
+        indices[index] = { value, value + 3, value + 2 };
+        indices[index + 1] = { value, value + 2, value + 1 };
+    }
+
+    indices[2] = { 5, 6, 7 };
+    indices[3] = { 5, 7, 4 };
 
     if (FAILED(g_pd3dDevice->CreateIndexBuffer(sizeof(indices), 0, D3DFMT_INDEX32, D3DPOOL_DEFAULT, &g_pIB, NULL))) return E_FAIL;
 
@@ -253,7 +344,7 @@ void SetupMatrices()
     g_pd3dDevice->SetTransform(D3DTS_WORLD, &matWorld);
 
     // 뷰 스페이스
-    D3DXVECTOR3 vEyePt(0.0f, 3.0f, -5.0f); // 월드 좌표의 카메라 위치
+    D3DXVECTOR3 vEyePt(0.0f, 3.0f, -10.0f); // 월드 좌표의 카메라 위치
     D3DXVECTOR3 vLookAtPt(0.0f, 0.0f, 0.0f); // 월드 좌표의 카메라가 바라보는 위치
     D3DXVECTOR3 vUpVector(0.0f, 1.0f, 0.0f); // 월드 좌표의 하늘 방향을 알기 위한 업 벡터
 
@@ -265,4 +356,37 @@ void SetupMatrices()
     D3DXMATRIXA16 matProj;
     D3DXMatrixPerspectiveFovLH(&matProj, 45 * Deg2Rad, 1.77f, 1.0f, 100.0f);
     g_pd3dDevice->SetTransform(D3DTS_PROJECTION, &matProj);
+}
+
+void Update()
+{
+    auto angle = GetTickCount64() * 0.001f;
+    D3DXMATRIXA16 matSunTr, matSunRo;
+    D3DXMATRIXA16 matEarthTr, matEarthRo, matEarthSc;
+    D3DXMATRIXA16 matMoonTr, matMoonRo, matMoonSc;
+
+    D3DXMatrixTranslation(&matSunTr, 0, 0, 0);
+    D3DXMatrixRotationY(&matSunRo, angle);
+    g_matSun = matSunRo * matSunTr;
+
+    D3DXMatrixTranslation(&matEarthTr, 5, 0, 0);
+    D3DXMatrixRotationY(&matEarthRo, angle * 0.1f);
+    //D3DXMatrixScaling(&matEarthSc, 0.8f, 0.8f, 0.8f);
+    // 회전(자전) * 이동
+    g_matEarth = matEarthRo * matEarthTr * matEarthRo * g_matSun;
+
+    D3DXMatrixRotationY(&matMoonRo, angle);
+    D3DXMatrixScaling(&matMoonSc, 0.5f, 0.5f, 0.5f);
+    D3DXMatrixTranslation(&matMoonTr, 3, 0, 0);
+    // 크기 변경 * 이동 * 회전(공전) * 부모의 정보 추가
+    g_matMoon = matMoonRo * matMoonSc * matMoonTr * matMoonRo * g_matEarth;
+}
+
+void DrawMesh(const D3DXMATRIXA16& matrix)
+{
+    g_pd3dDevice->SetTransform(D3DTS_WORLD, &matrix);
+    g_pd3dDevice->SetStreamSource(0, g_pVB, 0, sizeof(CUSTOMVERTEX));
+    g_pd3dDevice->SetFVF(D3DFVF_CUSTOM);
+    g_pd3dDevice->SetIndices(g_pIB);
+    g_pd3dDevice->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, 24, 0, 12);
 }

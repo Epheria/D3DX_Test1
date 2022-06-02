@@ -9,11 +9,9 @@
 // Windows 헤더 파일
 #include <windows.h>
 // C 런타임 헤더 파일입니다.
+#include <stdio.h>
+#include <math.h>
 #include <stdlib.h>
 #include <malloc.h>
 #include <memory.h>
 #include <tchar.h>
-#pragma comment(lib, "d3d9.lib");
-#pragma comment(lib, "d3dx9.lib");
-#include <d3d9.h>
-#include <d3dx9.h>

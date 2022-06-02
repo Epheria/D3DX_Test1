@@ -145,12 +145,14 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="D3DX_T.h" />
+    <ClInclude Include="DIB.h" />
     <ClInclude Include="framework.h" />
     <ClInclude Include="Resource.h" />
     <ClInclude Include="targetver.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="D3DX_T.cpp" />
+    <ClCompile Include="DIB.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="D3DX_T.rc" />
