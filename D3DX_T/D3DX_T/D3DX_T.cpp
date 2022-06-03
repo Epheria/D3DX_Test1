@@ -361,23 +361,25 @@ void SetupMatrices()
 void Update()
 {
     auto angle = GetTickCount64() * 0.001f;
-    D3DXMATRIXA16 matSunTr, matSunRo;
+    D3DXMATRIXA16 matSunTr, matSunRo, matSunSc;
     D3DXMATRIXA16 matEarthTr, matEarthRo, matEarthSc;
     D3DXMATRIXA16 matMoonTr, matMoonRo, matMoonSc;
 
     D3DXMatrixTranslation(&matSunTr, 0, 0, 0);
+    D3DXMatrixScaling(&matSunSc, 1.0f, 1.0f, 1.0f);
     D3DXMatrixRotationY(&matSunRo, angle);
-    g_matSun = matSunRo * matSunTr;
+    g_matSun = matSunSc * matSunRo * matSunTr;
 
-    D3DXMatrixTranslation(&matEarthTr, 5, 0, 0);
+    D3DXMatrixTranslation(&matEarthTr, 6, 0, 0);
+    D3DXMatrixScaling(&matEarthSc, 0.5f, 0.5f, 0.5f);
     D3DXMatrixRotationY(&matEarthRo, angle * 0.1f);
     //D3DXMatrixScaling(&matEarthSc, 0.8f, 0.8f, 0.8f);
     // 회전(자전) * 이동
-    g_matEarth = matEarthRo * matEarthTr * matEarthRo * g_matSun;
+    g_matEarth = matEarthSc * matEarthRo * matEarthTr * matEarthRo * g_matSun;
 
     D3DXMatrixRotationY(&matMoonRo, angle);
-    D3DXMatrixScaling(&matMoonSc, 0.5f, 0.5f, 0.5f);
-    D3DXMatrixTranslation(&matMoonTr, 3, 0, 0);
+    D3DXMatrixScaling(&matMoonSc, 0.35f, 0.35f, 0.35f);
+    D3DXMatrixTranslation(&matMoonTr, 5, 0, 0);
     // 크기 변경 * 이동 * 회전(공전) * 부모의 정보 추가
     g_matMoon = matMoonRo * matMoonSc * matMoonTr * matMoonRo * g_matEarth;
 }

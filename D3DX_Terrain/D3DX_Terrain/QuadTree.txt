@@ -1,4 +1,4 @@
-﻿// D3DX_T.cpp : 애플리케이션에 대한 진입점을 정의합니다.
+// D3DX_T.cpp : 애플리케이션에 대한 진입점을 정의합니다.
 //
 
 #pragma comment(lib, "d3d9.lib")
@@ -30,7 +30,6 @@ LPDIRECT3DVERTEXBUFFER9 g_pVB = NULL;
 LPDIRECT3DTEXTURE9 g_pTexture = NULL;
 int g_vertexCount, g_indexCount;
 int g_cx = 3, g_cz = 3; // 가로, 세로 정점의 수
-bool isViewWireframe = false;
 
 // Frustum Culling 관련
 LPD3DXVECTOR3 g_pTerrainVertices = NULL;
@@ -67,13 +66,11 @@ private:
         UNKNOWN = -1                // 알 수 없는 상태
     };
     enum CornerType { CornerType_TL = 0, CornerType_TR, CornerType_BL, CornerType_BR };
-    enum { EDGE_UP = 0, EDGE_DN, EDGE_LT, EDGE_RT };
     int center;
     int corners[4];
     bool isCulled;
     float radius; // 경계구의 반지름
     QuadTree* childs[4];
-    QuadTree* neighbors[4];
 public:
     QuadTree(int cx, int cy);
     ~QuadTree();
@@ -82,29 +79,12 @@ private:
     VOID SetCorners(int cornerTL, int cornerTR, int cornerBL, int cornerBR);
     QuadTree* AddChild(int cornerTL, int cornerTR, int cornerBL, int cornerBR);
     BOOL SubDivided(); // 4개의 하위 노드로 분할
-    BOOL IsVisible(LPD3DXVECTOR3 pVertices, float LODRatio)
-    {
-        return (GetCurrLODLevel(pVertices, LODRatio) >= (corners[CornerType_TR] - corners[CornerType_TL]));
-    }
-    INT GetCurrLODLevel(LPD3DXVECTOR3 pVertices, float LODRatio)
-    {
-        D3DXVECTOR3 v = vEyePt - pVertices[center];
-        float dist = D3DXVec3Length(&v);
-
-        return max((int)(dist * LODRatio), 1);
-    }
-
+    BOOL IsVisible() { return (1 >= (corners[CornerType_TR] - corners[CornerType_TL])); }
     // pIndex : 폴리곤(triangle) 인덱스 정보 output
     // return : 그리게 될 폴리곤(trinagle)의 수
-    INT GenerateIndices(LPVOID pIndices, int triangles, LPD3DXVECTOR3 pVertices);
+    INT GenerateIndices(LPVOID pIndices, int triangles = 0);
     Location FrustumLocation(LPD3DXVECTOR3 pVertices);
     VOID ProcessFrustumCull(LPD3DXVECTOR3 pVertices);
-    VOID AllFrustum() { isCulled = false; if (childs[0]) { for (int i = 0; 4 > i; i++) childs[i]->AllFrustum(); } }
-    VOID BuildQuadTree(LPD3DXVECTOR3 pVertices);
-    VOID BuildNeighborNode(QuadTree* pRoot, LPD3DXVECTOR3 pVertices, INT cx);
-    // 이웃 노드의 코너값(cornerTL, cornerTR, cornerBL, cornerBR)을 구한다.
-    INT GetNodeIndex(INT edge, INT cx, INT& cornerTL, INT& cornerTR, INT& cornerBL, INT& cornerBR);
-    QuadTree* FindNode(LPD3DXVECTOR3 pVertices, INT cornerTL, INT cornerTR, INT cornerBL, INT corenrBR);
 public:
     VOID Build(LPD3DXVECTOR3 pVertices); // 쿼드 트리 구축
     INT GetIndices(LPVOID pIndices, LPD3DXVECTOR3 pVertices);
@@ -215,14 +195,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
     switch (message)
     {
-    case WM_KEYDOWN:
-        if (VK_NUMPAD2 == wParam)
-        {
-            //Wireframe 또는 Solid로 그리기
-            isViewWireframe = !isViewWireframe;
-            g_pd3dDevice->SetRenderState(D3DRS_FILLMODE, isViewWireframe ? D3DFILL_WIREFRAME : D3DFILL_SOLID);
-        }
-        break;
     case WM_DESTROY:
         PostQuitMessage(0);
         break;
@@ -476,7 +448,6 @@ QuadTree::QuadTree(int cx, int cy) : center(0), isCulled(false), radius(0) {
     {
         corners[i] = 0;
         childs[i] = NULL;
-        neighbors[i] = NULL;
     }
     
     if (!(IsPowerOf2Plus1(cx) && IsPowerOf2Plus1(cy))) return; // cx, cy가 (2^n)+1 인지 확인
@@ -497,33 +468,30 @@ QuadTree::QuadTree() : center(0), isCulled(false), radius(0) {
     {
         corners[i] = 0;
         childs[i] = NULL;
-        neighbors[i] = NULL;
     }
 }
 QuadTree::~QuadTree() { for (int i = 0; 4 > i; i++) DEL(childs[i]); }
 
 VOID QuadTree::Build(LPD3DXVECTOR3 pVertices)
 {
-    BuildQuadTree(pVertices);
-    BuildNeighborNode(this, pVertices, corners[CornerType_TR] + 1);
-    //if (SubDivided())
-    //{
-    //    // 경계구의 반지름을 구하기 위해, 영역의 대각선 길이(경계구의 지름)를 구한다.
-    //    D3DXVECTOR3 v = (pVertices[corners[CornerType_TL]] - pVertices[corners[CornerType_BR]]);
-    //    radius = D3DXVec3Length(&v) * 0.5f;
+    if (SubDivided())
+    {
+        // 경계구의 반지름을 구하기 위해, 영역의 대각선 길이(경계구의 지름)를 구한다.
+        D3DXVECTOR3 v = (pVertices[corners[CornerType_TL]] - pVertices[corners[CornerType_BR]]);
+        radius = D3DXVec3Length(&v) * 0.5f;
 
-    //    childs[CornerType_TL]->Build(pVertices);
-    //    childs[CornerType_TR]->Build(pVertices);
-    //    childs[CornerType_BL]->Build(pVertices);
-    //    childs[CornerType_BR]->Build(pVertices);
+        childs[CornerType_TL]->Build(pVertices);
+        childs[CornerType_TR]->Build(pVertices);
+        childs[CornerType_BL]->Build(pVertices);
+        childs[CornerType_BR]->Build(pVertices);
 
-    //}
+    }
 }
 
 INT QuadTree::GetIndices(LPVOID pIndices, LPD3DXVECTOR3 pVertices)
 {
     ProcessFrustumCull(pVertices);
-    return GenerateIndices(pIndices, 0, pVertices);
+    return GenerateIndices(pIndices);
 }
 
 QuadTree* QuadTree::AddChild(int cornerTL, int cornerTR, int cornerBL, int cornerBR)
@@ -591,7 +559,7 @@ QuadTree::Location QuadTree::FrustumLocation(LPD3DXVECTOR3 pVertices)
     return Location::FRUSTUM_PARTIALLY_IN; // 부분적 내 외부
 }
 
-INT QuadTree::GenerateIndices(LPVOID pIndices, int triangles, LPD3DXVECTOR3 pVertices)
+INT QuadTree::GenerateIndices(LPVOID pIndices, int triangles)
 {
     if (isCulled)
     {
@@ -599,204 +567,27 @@ INT QuadTree::GenerateIndices(LPVOID pIndices, int triangles, LPD3DXVECTOR3 pVer
         return triangles;
     }
 
-    if (IsVisible(pVertices, 0.7f))
+    if (IsVisible())
     {
         LPDWORD pIdx = ((LPDWORD)pIndices) + triangles * 3;
-
-        // leaf 노드일 경우 자식이 없으므로 그냥 출력
-        if (1 >= (corners[CornerType_TR] - corners[CornerType_TL]))
-        {
-            (*pIdx++) = corners[CornerType_TL];
-            (*pIdx++) = corners[CornerType_TR];
-            (*pIdx++) = corners[CornerType_BL];
-            triangles++;
-            (*pIdx++) = corners[CornerType_BL];
-            (*pIdx++) = corners[CornerType_TR];
-            (*pIdx++) = corners[CornerType_BR];
-            triangles++;
-            return triangles;
-        }
-
-        bool b[4] = { false, };
-        if (neighbors[EDGE_UP]) b[EDGE_UP] = neighbors[EDGE_UP]->IsVisible(pVertices, 0.7f);
-        if (neighbors[EDGE_DN]) b[EDGE_DN] = neighbors[EDGE_DN]->IsVisible(pVertices, 0.7f);
-        if (neighbors[EDGE_LT]) b[EDGE_LT] = neighbors[EDGE_LT]->IsVisible(pVertices, 0.7f);
-        if (neighbors[EDGE_RT]) b[EDGE_RT] = neighbors[EDGE_RT]->IsVisible(pVertices, 0.7f);
-        // 이웃 노드가 전부 출력이 가능하다면, 같은 level이기 때문에 분할이 불필요
-        if (b[EDGE_UP] && b[EDGE_DN] && b[EDGE_LT] && b[EDGE_RT])
-        {
-            (*pIdx++) = corners[CornerType_TL];
-            (*pIdx++) = corners[CornerType_TR];
-            (*pIdx++) = corners[CornerType_BL];
-            triangles++;
-            (*pIdx++) = corners[CornerType_BL];
-            (*pIdx++) = corners[CornerType_TR];
-            (*pIdx++) = corners[CornerType_BR];
-            triangles++;
-
-            return triangles;
-        }
-
-        int n;
-        if (!b[EDGE_UP]) // 상단 분할
-        {
-            n = (corners[CornerType_TL] + corners[CornerType_TR]) * 0.5f;
-            (*pIdx++) = center; (*pIdx++) = corners[CornerType_TL]; (*pIdx++) = n; triangles++;
-            (*pIdx++) = center; (*pIdx++) = n; (*pIdx++) = corners[CornerType_TR]; triangles++;
-        }
-        else
-        {
-            (*pIdx++) = center; (*pIdx++) = corners[CornerType_TL]; (*pIdx++) = corners[CornerType_TR]; triangles++;
-        }
-
-        if (!b[EDGE_DN]) // 하단 분할
-        {
-            n = (corners[CornerType_BL] + corners[CornerType_BR]) * 0.5f;
-            (*pIdx++) = center; (*pIdx++) = corners[CornerType_BR]; (*pIdx++) = n; triangles++;
-            (*pIdx++) = center; (*pIdx++) = n; (*pIdx++) = corners[CornerType_BL]; triangles++;
-        }
-        else
-        {
-            (*pIdx++) = center; (*pIdx++) = corners[CornerType_BR]; (*pIdx++) = corners[CornerType_BL]; triangles++;
-        }
-
-        if (!b[EDGE_LT]) // 좌측 분할.
-        {
-            n = (corners[CornerType_TL] + corners[CornerType_BL]) * 0.5f;
-            (*pIdx++) = center; (*pIdx++) = corners[CornerType_BL]; (*pIdx++) = n; triangles++;
-            (*pIdx++) = center; (*pIdx++) = n; (*pIdx++) = corners[CornerType_TL]; triangles++;
-        }
-        else
-        {
-            (*pIdx++) = center; (*pIdx++) = corners[CornerType_BL]; (*pIdx++) = corners[CornerType_TL]; triangles++;
-        }
-        if (!b[EDGE_RT]) // 우측 분할.
-        {
-            n = (corners[CornerType_TR] + corners[CornerType_BR]) * 0.5f;
-            (*pIdx++) = center; (*pIdx++) = corners[CornerType_TR]; (*pIdx++) = n; triangles++;
-            (*pIdx++) = center; (*pIdx++) = n; (*pIdx++) = corners[CornerType_BR]; triangles++;
-        }
-        else
-        {
-            (*pIdx++) = center; (*pIdx++) = corners[CornerType_TR]; (*pIdx++) = corners[CornerType_BR]; triangles++;
-        }
+        (*pIdx++) = corners[CornerType_TL];
+        (*pIdx++) = corners[CornerType_TR];
+        (*pIdx++) = corners[CornerType_BL];
+        triangles++;
+        (*pIdx++) = corners[CornerType_BL];
+        (*pIdx++) = corners[CornerType_TR];
+        (*pIdx++) = corners[CornerType_BR];
+        triangles++;
         return triangles;
     }
 
-    if (childs[CornerType_TL]) triangles = childs[CornerType_TL]->GenerateIndices(pIndices, triangles, pVertices);
-    if (childs[CornerType_TR]) triangles = childs[CornerType_TR]->GenerateIndices(pIndices, triangles, pVertices);
-    if (childs[CornerType_BL]) triangles = childs[CornerType_BL]->GenerateIndices(pIndices, triangles, pVertices);
-    if (childs[CornerType_BR]) triangles = childs[CornerType_BR]->GenerateIndices(pIndices, triangles, pVertices);
+    if (childs[CornerType_TL]) triangles = childs[CornerType_TL]->GenerateIndices(pIndices, triangles);
+    if (childs[CornerType_TR]) triangles = childs[CornerType_TR]->GenerateIndices(pIndices, triangles);
+    if (childs[CornerType_BL]) triangles = childs[CornerType_BL]->GenerateIndices(pIndices, triangles);
+    if (childs[CornerType_BR]) triangles = childs[CornerType_BR]->GenerateIndices(pIndices, triangles);
 
     return triangles;
 
-}
-
-VOID QuadTree::BuildQuadTree(LPD3DXVECTOR3 pVertices)
-{
-    if (SubDivided())
-    {
-        // 경계구의 반지름을 구하기 위해, 영역의 대각선 길이(경계구의 지름)를 구한다.
-        D3DXVECTOR3 v = (pVertices[corners[CornerType_TL]] - pVertices[corners[CornerType_BR]]);
-        radius = D3DXVec3Length(&v) * 0.5f;
-
-        childs[CornerType_TL]->BuildQuadTree(pVertices);
-        childs[CornerType_TR]->BuildQuadTree(pVertices);
-        childs[CornerType_BL]->BuildQuadTree(pVertices);
-        childs[CornerType_BR]->BuildQuadTree(pVertices);
-    }
-}
-
-VOID QuadTree::BuildNeighborNode(QuadTree* pRoot, LPD3DXVECTOR3 pVertices, INT cx)
-{
-    int n, TL, TR, BL, BR;
-    for (int i = 0; 4 > i; i++)
-    {
-        TL = corners[CornerType_TL];
-        TR = corners[CornerType_TR];
-        BL = corners[CornerType_BL];
-        BR = corners[CornerType_BR];
-        n = GetNodeIndex(i, cx, TL, TR, BL, BR); // 이웃 노드의 코너값을 얻는다.
-        if (0 <= n) neighbors[i] = pRoot->FindNode(pVertices, TL, TR, BL, BR);
-    }
-
-    if (childs[0])
-    {
-        childs[CornerType_TL]->BuildNeighborNode(pRoot, pVertices, cx);
-        childs[CornerType_TR]->BuildNeighborNode(pRoot, pVertices, cx);
-        childs[CornerType_BL]->BuildNeighborNode(pRoot, pVertices, cx);
-        childs[CornerType_BR]->BuildNeighborNode(pRoot, pVertices, cx);
-    }
-}
-
-INT QuadTree::GetNodeIndex(INT edge, INT cx, INT& cornerTL, INT& cornerTR, INT& cornerBL, INT& cornerBR)
-{
-    int TL = cornerTL;
-    int TR = cornerTR;
-    int BL = cornerBL;
-    int BR = cornerBR;
-    int gap = TR - TL;
-
-    switch (edge)
-    {
-    case EDGE_UP:
-        cornerTL = TL - cx * gap;
-        cornerTR = TR - cx * gap;
-        cornerBL = TL;
-        cornerBR = TR;
-        break;
-    case EDGE_DN:
-        cornerTL = BL;
-        cornerTR = BR;
-        cornerBL = BL + cx * gap;
-        cornerBR = BR + cx * gap;
-        break;
-    case EDGE_LT:
-        cornerTL = TL - gap;
-        cornerTR = TL;
-        cornerBL = BL - gap;
-        cornerBR = BL;
-        break;
-    case EDGE_RT:
-        cornerTL = TR;
-        cornerTR = TR + gap;
-        cornerBL = BR;
-        cornerBR = BR + gap;
-        break;
-    }
-
-    int n = (cornerTL + cornerBR) * 0.5f;
-    if (!IS_IN_RANGE(n, 0, cx * cx - 1)) return -1; // DIB.h
-
-    return n;
-}
-
-QuadTree* QuadTree::FindNode(LPD3DXVECTOR3 pVertices, INT cornerTL, INT cornerTR, INT cornerBL, INT cornerBR)
-{
-    if ((corners[CornerType_TL] == cornerTL) && (corners[CornerType_TR] == cornerTR) &&
-        (corners[CornerType_BL] == cornerBL) && (corners[CornerType_BR] == cornerBR)) return this;
-
-    if (childs[0])
-    {
-        int n = (cornerTL + cornerBR) * 0.5f;
-        POINT pt = { (int)pVertices[n].x, (int)pVertices[n].z };
-        RECT rc;
-        QuadTree* node = NULL;
-        for (int i = 0; 4 > i; i++)
-        {
-            SetRect(&rc,
-                (int)pVertices[childs[i]->corners[CornerType_TL]].x,
-                (int)pVertices[childs[i]->corners[CornerType_TL]].z,
-                (int)pVertices[childs[i]->corners[CornerType_BR]].x,
-                (int)pVertices[childs[i]->corners[CornerType_BR]].z);
-
-            // IsInRect()는 DIB.h에 있음.
-            if (IsInRect(&rc, pt)) node = childs[i]->FindNode(pVertices, cornerTL, cornerTR, cornerBL, cornerBR);
-            if (NULL != node) return node;
-        }
-    }
-
-    return NULL;
 }
 
 void MakeFrustum(LPD3DXMATRIXA16 viewProj)
