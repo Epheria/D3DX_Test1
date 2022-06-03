@@ -13,6 +13,7 @@
 
 #define MAX_LOADSTRING 100
 #define Deg2Rad 0.017453293f
+#define PLANE_EPSILON 0.001f // 절두체에 정확하게 포함되지 않더라도, 약간의 여분을 주어서 포함시키기 위한 값
 
 
 // 전역 변수:
@@ -30,6 +31,14 @@ LPDIRECT3DTEXTURE9 g_pTexture = NULL;
 int g_vertexCount, g_indexCount;
 int g_cx = 3, g_cz = 3; // 가로, 세로 정점의 수
 
+// Frustum Culling 관련
+LPD3DXVECTOR3 g_pTerrainVertices = NULL;
+D3DXVECTOR3 g_FrustumVertices[8];
+D3DXPLANE g_FrustumPlanes[6];
+void MakeFrustum(LPD3DXMATRIXA16 viewProj);
+bool IsInFrustum(LPD3DXVECTOR3 v);
+bool IsInFrustumBoundsSphere(LPD3DXVECTOR3 center, float radius);
+
 struct INDEX
 {
     DWORD _0, _1, _2;
@@ -43,6 +52,41 @@ struct CUSTOMVERTEX
     D3DXVECTOR2 tex;
 };
 #define D3DFVF_CUSTOM (D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_TEX1)
+
+class QuadTree
+{
+private:
+    enum class Location {
+        FRUSTUM_OUT = 0,            // 절두체의 완전한 외부
+        FRUSTUM_PARTIALLY_IN = 1,   // 절두체의 부분적 내,외부
+        FRUSTUM_COMPLETELY_IN = 2,  // 절두체의 완전한 내부
+        UNKNOWN = -1                // 알 수 없는 상태
+    };
+    enum CornerType { CornerType_TL = 0, CornerType_TR, CornerType_BL, CornerType_BR };
+    int center;
+    int corners[4];
+    bool isCulled;
+    float radius; // 경계구의 반지름
+    QuadTree* childs[4];
+public:
+    QuadTree(int cx, int cy);
+    ~QuadTree();
+private:
+    QuadTree();
+    VOID SetCorners(int cornerTL, int cornerTR, int cornerBL, int cornerBR);
+    QuadTree* AddChild(int cornerTL, int cornerTR, int cornerBL, int cornerBR);
+    BOOL SubDivided(); // 4개의 하위 노드로 분할
+    BOOL IsVisible() { return (1 >= (corners[CornerType_TR] - corners[CornerType_TL])); }
+    // pIndex : 폴리곤(triangle) 인덱스 정보 output
+    // return : 그리게 될 폴리곤(trinagle)의 수
+    INT GenerateIndices(LPVOID pIndices, int triangles = 0);
+    Location FrustumLocation(LPD3DXVECTOR3 pVertices);
+    VOID ProcessFrustumCull(LPD3DXVECTOR3 pVertices);
+public:
+    VOID Build(LPD3DXVECTOR3 pVertices); // 쿼드 트리 구축
+    INT GetIndices(LPVOID pIndices, LPD3DXVECTOR3 pVertices);
+};
+QuadTree* q_pQuadTree = NULL;
 
 HRESULT InitD3D(HWND);
 HRESULT CreateVIB();
@@ -230,6 +274,7 @@ HRESULT CreateVIB()
     g_vertexCount = g_cx * g_cz;
     CUSTOMVERTEX* vertices = new CUSTOMVERTEX[g_vertexCount];
     if (!vertices) return E_FAIL;
+    g_pTerrainVertices = new D3DXVECTOR3[g_vertexCount];
 
     CUSTOMVERTEX vertex;
     const int row = (g_cx - 1);
@@ -244,15 +289,17 @@ HRESULT CreateVIB()
         {
             xPos = x * unitRow;
             zPos = z * unitColumn;
-            vertex.postion.x = (-0.5f + xPos) * 1/*x size*/;
-            vertex.postion.z = (0.5f - zPos) * 1/*z size*/;
-            if (pDIB) vertex.postion.y = (float)(*(DIB_DATAXY_INV(pDIB, x, z))) * 1 /*y size*/;
+            vertex.postion.x = (-0.5f + xPos) * 10/*1 => 10*/;
+            vertex.postion.z = (0.5f - zPos) * 10/*1 => 1-*/;
+            if (pDIB) vertex.postion.y = (float)(*(DIB_DATAXY_INV(pDIB, x, z))) * 1 /*y size*/ * 0.003022f;
             else vertex.postion.y = 0;
             D3DXVec3Normalize(&vertex.normal, &vertex.postion);
             vertex.tex.x = xPos;
             vertex.tex.y = zPos;
             int index = x + z * g_cx;
             vertices[index] = vertex;
+            
+            g_pTerrainVertices[index] = vertex.postion;
         }
     }
     if (pDIB) DIBDeleteHandle(pDIB);
@@ -266,7 +313,11 @@ HRESULT CreateVIB()
             g_pVB->Unlock();
 
             //IB 생성
-            g_pd3dDevice->CreateIndexBuffer(row * column * 2 * sizeof(INDEX), 0, D3DFMT_INDEX32, D3DPOOL_DEFAULT, &g_pIB, NULL);
+            if (SUCCEEDED(g_pd3dDevice->CreateIndexBuffer((g_cx - 1) * (g_cz - 1) * 2 * sizeof(INDEX), 0, D3DFMT_INDEX32, D3DPOOL_DEFAULT, &g_pIB, NULL)))
+            {
+                q_pQuadTree = new QuadTree(g_cx, g_cz);
+                q_pQuadTree->Build(g_pTerrainVertices);
+            }
         } // g_pVB->Lock
     } // CreateVertexBuffer
 
@@ -283,6 +334,8 @@ void Cleanup()
     if (NULL != g_pIB) g_pIB->Release();
     if (NULL != g_pVB) g_pVB->Release();
     if (NULL != g_pTexture) g_pTexture->Release();
+    if (NULL != q_pQuadTree) delete q_pQuadTree;
+    if (NULL != g_pTerrainVertices) delete[] g_pTerrainVertices;
 }
 
 // 화면에 그리기
@@ -325,9 +378,30 @@ void SetupMatrices()
     g_pd3dDevice->SetTransform(D3DTS_WORLD, &matWorld);
 
     // 뷰 스페이스
-    D3DXVECTOR3 vEyePt(0.0f, 10.0f, -10.0f); // 월드 좌표의 카메라 위치
+    D3DXVECTOR3 vEyePt(0.0f, 3.0f, -5.0f); // 월드 좌표의 카메라 위치
     D3DXVECTOR3 vLookAtPt(0.0f, 0.0f, 0.0f); // 월드 좌표의 카메라가 바라보는 위치
     D3DXVECTOR3 vUpVector(0.0f, 1.0f, 0.0f); // 월드 좌표의 하늘 방향을 알기 위한 업 벡터
+
+    if (GetAsyncKeyState(VK_LEFT))
+    {
+        vEyePt.x -= 0.01f;
+        vLookAtPt.x -= 0.01f;
+    }
+    else if (GetAsyncKeyState(VK_RIGHT))
+    {
+        vEyePt.x += 0.01f;
+        vLookAtPt.x += 0.01f;
+    }
+    if (GetAsyncKeyState(VK_UP))
+    {
+        vEyePt.z += 0.01f;
+        vLookAtPt.z += 0.01f;
+    }
+    else if (GetAsyncKeyState(VK_DOWN))
+    {
+        vEyePt.z -= 0.01f;
+        vLookAtPt.z -= 0.01f;
+    }
 
     D3DXMATRIXA16 matView;
     D3DXMatrixLookAtLH(&matView, &vEyePt, &vLookAtPt, &vUpVector); // 뷰 변환 행렬 계산
@@ -337,36 +411,24 @@ void SetupMatrices()
     D3DXMATRIXA16 matProj;
     D3DXMatrixPerspectiveFovLH(&matProj, 45 * Deg2Rad, 1.77f, 1.0f, 100.0f);
     g_pd3dDevice->SetTransform(D3DTS_PROJECTION, &matProj);
+
+    if (GetKeyState(VK_NUMPAD1))
+    {
+        D3DXMatrixPerspectiveFovLH(&matProj, 45 * Deg2Rad * 0.5f, 1.77f, 0.5f, 5);
+        matView._43 -= 0.6f;
+    }
+    D3DXMATRIXA16 matViewProj = matView * matProj;
+    MakeFrustum(&matViewProj);
 }
 
 void Update()
 {
-    if (NULL == g_pIB) return;
+    if (NULL == g_pIB || NULL == q_pQuadTree || NULL == g_pTerrainVertices) return;
     LPDWORD pl;
     const int row = (g_cx - 1), column = (g_cz - 1);
-    if (SUCCEEDED(g_pIB->Lock(0, row * column * 2 * sizeof(INDEX), (void**)&pl, 0)))
+    if (SUCCEEDED(g_pIB->Lock(0, (g_cx - 1) * (g_cz - 1) * 2 * sizeof(INDEX), (void**)&pl, 0)))
     {
-        g_indexCount = 0;
-        DWORD index[4];
-        for (int z = 0; column > z; z++)
-        {
-            for (int x = 0; row > x; x++)
-            {
-                // 하나의 정점당 두 개의 폴리곤 index를 가진다.
-                index[0] = x + z * g_cx;
-                index[1] = index[0] + 1;
-                index[2] = index[1] + g_cx;
-                index[3] = index[0] + g_cx;
-                (*pl++) = index[0];
-                (*pl++) = index[1];
-                (*pl++) = index[2];
-                g_indexCount++;
-                (*pl++) = index[0];
-                (*pl++) = index[2];
-                (*pl++) = index[3];
-                g_indexCount++;
-            }
-        }
+        g_indexCount = q_pQuadTree->GetIndices(pl, g_pTerrainVertices);
         g_pIB->Unlock();
     }
 }
@@ -379,4 +441,201 @@ void DrawMesh(const D3DXMATRIXA16& matrix)
     g_pd3dDevice->SetFVF(D3DFVF_CUSTOM);
     g_pd3dDevice->SetIndices(g_pIB);
     g_pd3dDevice->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, g_vertexCount, 0, g_indexCount);
+}
+
+QuadTree::QuadTree(int cx, int cy) : center(0), isCulled(false), radius(0) {
+    for (int i = 0; 4 > i; i++)
+    {
+        corners[i] = 0;
+        childs[i] = NULL;
+    }
+    
+    if (!(IsPowerOf2Plus1(cx) && IsPowerOf2Plus1(cy))) return; // cx, cy가 (2^n)+1 인지 확인
+    // [n = 1] cx = 3, cy = 3
+    // TL          TR // n = 2, cx = 5, cy = 5
+    // 0 --- 1 --- 2 // 00-01-02-03-04
+    // |     |     | // 05-06-07-08-09
+    // 3 --- 4 --- 5 // 10-11-12-13-14
+    // |     |     | // 15-16-17-18-19
+    // 6 --- 7 --- 8 // 20-21-22-23-24
+    // BL          BR
+    // center = 4 = ( 0 + 2 + 6 + 8) / 4
+    SetCorners(0, (cx - 1), (cx * (cy - 1)), (cx * cy - 1));
+}
+
+QuadTree::QuadTree() : center(0), isCulled(false), radius(0) {
+    for (int i = 0; 4 > i; i++)
+    {
+        corners[i] = 0;
+        childs[i] = NULL;
+    }
+}
+QuadTree::~QuadTree() { for (int i = 0; 4 > i; i++) DEL(childs[i]); }
+
+VOID QuadTree::Build(LPD3DXVECTOR3 pVertices)
+{
+    if (SubDivided())
+    {
+        // 경계구의 반지름을 구하기 위해, 영역의 대각선 길이(경계구의 지름)를 구한다.
+        D3DXVECTOR3 v = (pVertices[corners[CornerType_TL]] - pVertices[corners[CornerType_BR]]);
+        radius = D3DXVec3Length(&v) * 0.5f;
+    }
+}
+
+INT QuadTree::GetIndices(LPVOID pIndices, LPD3DXVECTOR3 pVertices)
+{
+    ProcessFrustumCull(pVertices);
+    return GenerateIndices(pIndices);
+}
+
+QuadTree* QuadTree::AddChild(int cornerTL, int cornerTR, int cornerBL, int cornerBR)
+{
+    QuadTree* child = new QuadTree();
+    child->SetCorners(cornerTL, cornerTR, cornerBL, cornerBR);
+    return child;
+}
+
+BOOL QuadTree::SubDivided()
+{
+    // 간격이 1보다 작거나 같을 때까지 분할 한다.
+    if (1 >= (corners[CornerType_TR] - corners[CornerType_TL])) return FALSE;
+    int topCenter = (corners[CornerType_TL] + corners[CornerType_TR]) * 0.5f;
+    int bottomCenter = (corners[CornerType_BL] + corners[CornerType_BR]) * 0.5f;
+    int leftCenter = (corners[CornerType_TL] + corners[CornerType_BL]) * 0.5f;
+    int rightCenter = (corners[CornerType_TR] + corners[CornerType_BR]) * 0.5f;
+    childs[CornerType_TL] = AddChild(corners[CornerType_TL], topCenter, leftCenter, center);
+    childs[CornerType_TR] = AddChild(topCenter, corners[CornerType_TR], center, rightCenter);
+    childs[CornerType_BL] = AddChild(leftCenter, center, corners[CornerType_BL], bottomCenter);
+    childs[CornerType_BR] = AddChild(center, rightCenter, bottomCenter, corners[CornerType_BR]);
+    return TRUE;
+}
+
+
+VOID QuadTree::SetCorners(int cornerTL, int cornerTR, int cornerBL, int cornerBR)
+{
+    corners[CornerType_TL] = cornerTL;
+    corners[CornerType_TR] = cornerTR;
+    corners[CornerType_BL] = cornerBL;
+    corners[CornerType_BR] = cornerBR;
+    center = (corners[CornerType_TL] + corners[CornerType_TR] + corners[CornerType_BL] + corners[CornerType_BR]) * 0.25f;
+}
+
+VOID QuadTree::ProcessFrustumCull(LPD3DXVECTOR3 pVertices)
+{
+    switch (FrustumLocation(pVertices))
+    {
+    case Location::FRUSTUM_OUT: isCulled = true; return;
+    case Location::FRUSTUM_COMPLETELY_IN: isCulled = false; return;
+    case Location::FRUSTUM_PARTIALLY_IN: isCulled = false; break;
+    default: return;
+    }
+
+    if (childs[CornerType_TL]) childs[CornerType_TL]->ProcessFrustumCull(pVertices);
+    if (childs[CornerType_TR]) childs[CornerType_TR]->ProcessFrustumCull(pVertices);
+    if (childs[CornerType_BL]) childs[CornerType_BL]->ProcessFrustumCull(pVertices);
+    if (childs[CornerType_BR]) childs[CornerType_BR]->ProcessFrustumCull(pVertices);
+}
+
+QuadTree::Location QuadTree::FrustumLocation(LPD3DXVECTOR3 pVertices)
+{
+    // 경계구를 이용하여 해당 영역이 절두체 밖에 있는지 확인(완전한 외부)
+    if (!IsInFrustumBoundsSphere(&pVertices[center], radius)) return Location::FRUSTUM_OUT;
+
+    bool b[4]; // 영역 전체가 절두체 안에 있는지 확인 (완전한 내부)
+    b[0] = IsInFrustum(&pVertices[corners[CornerType_TL]]);
+    b[1] = IsInFrustum(&pVertices[corners[CornerType_TR]]);
+    b[2] = IsInFrustum(&pVertices[corners[CornerType_BL]]);
+    b[3] = IsInFrustum(&pVertices[corners[CornerType_BR]]);
+    if (b[0] & b[1] & b[2] & b[3]) return Location::FRUSTUM_COMPLETELY_IN;
+
+    return Location::FRUSTUM_PARTIALLY_IN; // 부분적 내 외부
+}
+
+INT QuadTree::GenerateIndices(LPVOID pIndices, int triangles)
+{
+    if (isCulled)
+    {
+        isCulled = FALSE;
+        return triangles;
+    }
+
+    if (IsVisible())
+    {
+        LPDWORD pIdx = ((LPDWORD)pIndices) + triangles * 3;
+        (*pIdx++) = corners[CornerType_TL];
+        (*pIdx++) = corners[CornerType_TR];
+        (*pIdx++) = corners[CornerType_BL];
+        triangles++;
+        (*pIdx++) = corners[CornerType_BL];
+        (*pIdx++) = corners[CornerType_TR];
+        (*pIdx++) = corners[CornerType_BR];
+        triangles++;
+        return triangles;
+    }
+
+    if (childs[CornerType_TL]) triangles = childs[CornerType_TL]->GenerateIndices(pIndices, triangles);
+    if (childs[CornerType_TR]) triangles = childs[CornerType_TR]->GenerateIndices(pIndices, triangles);
+    if (childs[CornerType_BL]) triangles = childs[CornerType_BL]->GenerateIndices(pIndices, triangles);
+    if (childs[CornerType_BR]) triangles = childs[CornerType_BR]->GenerateIndices(pIndices, triangles);
+
+    return triangles;
+
+}
+
+void MakeFrustum(LPD3DXMATRIXA16 viewProj)
+{
+    if (NULL == viewProj) return;
+    // 투영행렬까지 거치면 모든 3차원 월드좌표의 점은 (-1,-1,0) ~ (1,1,1)사이의 값으로 바뀐다.
+    g_FrustumVertices[0] = { -1.0f, -1.0f, 0.0f };// near left bottom
+    g_FrustumVertices[1] = { 1.0f, -1.0f, 0.0f };// near right bottom
+    g_FrustumVertices[2] = { 1.0f, -1.0f, 1.0f };// far right bottom
+    g_FrustumVertices[3] = { -1.0f, -1.0f, 1.0f };// far left bottom
+    g_FrustumVertices[4] = { -1.0f, 1.0f, 0.0f };// near left top
+    g_FrustumVertices[5] = { 1.0f, 1.0f, 0.0f }; // near right top
+    g_FrustumVertices[6] = { 1.0f, 1.0f, 1.0f }; // far right top
+    g_FrustumVertices[7] = { -1.0f, 1.0f, 1.0f };// far left top
+    // view * Proj의 역행렬을 구한다.
+    D3DXMATRIXA16 inv;
+    D3DXMatrixInverse(&inv, NULL, viewProj);
+    // 최종Vertex = WorldVertex * ViewMatrix * ProjectionMatrix 에서,
+    // 역행렬[(ViewMatrix * ProjectionMatrix)^-1]을 양변에 곱하면,
+    // 최종Vertex * 역행렬 = Vertex_World 가 된다.
+    // 그러므로, frustumVerties * inv = WorldVertex가 되어,
+    // 월드 좌표계의 절두체 좌표를 얻을 수 있다.
+    for (int i = 0; 8 > i; i++) D3DXVec3TransformCoord(&g_FrustumVertices[i], &g_FrustumVertices[i], &inv);
+    // 월드 좌표를 이용하여 법선 벡터가 절두체 안쪽에서 바깥쪽으로 나가는 평면을 만든다. 상, 하면은 제외.
+    //D3DXPlaneFromPoints(&g_FrustumPlanes[0], &g_FrustumVerties[4], &g_FrustumVerties[7], &g_FrustumVerties[6]);// 상 평면(top)
+    //D3DXPlaneFromPoints(&g_FrustumPlanes[1], &g_FrustumVerties[0], &g_FrustumVerties[1], &g_FrustumVerties[2]);// 하 평면(bottom)
+    D3DXPlaneFromPoints(&g_FrustumPlanes[2], &g_FrustumVertices[0], &g_FrustumVertices[4], &g_FrustumVertices[5]);// 근 평면(near)
+    D3DXPlaneFromPoints(&g_FrustumPlanes[3], &g_FrustumVertices[2], &g_FrustumVertices[6], &g_FrustumVertices[7]);// 원 평면(far)
+    D3DXPlaneFromPoints(&g_FrustumPlanes[4], &g_FrustumVertices[0], &g_FrustumVertices[3], &g_FrustumVertices[7]);// 좌 평면(left)
+    D3DXPlaneFromPoints(&g_FrustumPlanes[5], &g_FrustumVertices[1], &g_FrustumVertices[5], &g_FrustumVertices[6]);// 우 평면(right)
+}
+
+bool IsInFrustum(LPD3DXVECTOR3 v)
+{
+    if (NULL == v) return FALSE;
+    float dist;
+    for (int i = 2; i < 6; i++) // 현재는 left, right, near, far plane만 적용
+    {
+        // 평면과 벡터(v)의 내적을 구한다.
+        // // p⋅v == 0 직교.
+        // // p⋅v > 0 내각이 90보다 작다(절두체 밖에 위치)
+        // p⋅v < 0 내각이 90보다 크다(절두체 안에 위치)
+        dist = D3DXPlaneDotCoord(&g_FrustumPlanes[i], v);
+        if (PLANE_EPSILON < dist) return FALSE;
+    }
+    return TRUE;
+}
+
+bool IsInFrustumBoundsSphere(LPD3DXVECTOR3 center, float radius)
+{
+    if (NULL == center || 0 >= radius) return FALSE;
+    float dist;
+    for (int i = 2; i < 6; i++) // 현재는 left, right, near, far plane만 적용
+    {
+        dist = D3DXPlaneDotCoord(&g_FrustumPlanes[i], center);
+        if ((radius + PLANE_EPSILON) < dist) return FALSE; // 평면과 중심점의 거리가 반지름보다 크면 절두체 안에 없음.
+    }
+    return TRUE;
 }
